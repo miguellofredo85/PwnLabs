@@ -1,0 +1,85 @@
+
+Passo a passo — Bypass de autenticação com LLDB
+Contexto
+Temos um binário bypassme.bin que pede uma senha. O objetivo é descobrir a senha sem adivinhá-la, usando o debugger LLDB.
+
+Passo 1 — Conectar via SSH
+bashssh ctf-player@foggy-cliff.picoctf.net -p 65399
+# senha: 6dd28e9b
+
+Passo 2 — Reconhecimento inicial
+Primeiro tentamos strings para ver se a senha estava hardcoded em texto plano:
+bashstrings bypassme.bin | grep -i pass
+strings bypassme.bin | grep -i flag
+Encontramos referências a flag.txt mas não a senha diretamente.
+
+Passo 3 — Analisar o binário com LLDB
+Abrimos o LLDB e desmontamos o main para entender o fluxo:
+bashlldb bypassme.bin
+(lldb) disassemble --name main
+Observamos que o main chama uma função chamada decode_password logo no início — isso significa que a senha está ofuscada/codificada no binário e é decodificada em tempo de execução.
+asmcallq  0x1333   ; decode_password at bypassme.c:16:33
+
+Passo 4 — Colocar breakpoint em decode_password
+bash(lldb) b decode_password
+(lldb) run
+O processo parou dentro de decode_password. Nesse momento o buffer ainda está vazio — a função ainda não terminou de decodificar.
+
+Passo 5 — Deixar a função terminar
+Usamos finish para executar decode_password até o fim e voltar para o main:
+bash(lldb) finish
+
+Passo 6 — Ler a senha da memória
+No assembly do main vimos que o buffer da senha estava em rbp-0x110:
+asmleaq   -0x110(%rbp), %rax
+movq   %rax, %rdi
+callq  decode_password
+Então lemos esse endereço de memória:
+bash(lldb) x/s $rbp-0x110
+# Resultado:
+0x7ffe15f86f00: "SuperSecure"
+A senha é SuperSecure!
+
+Passo 7 — Usar a senha
+bash(lldb) quit
+
+./bypassme.bin
+# [3 tries left] Enter password: SuperSecure
+# -> Correct! Flag: picoCTF{...}
+
+Resumo da técnica
+EtapaO que fizemosstringsReconhecimento inicial — não encontrou a senhadisassemble --name mainIdentificamos a função decode_passwordb decode_passwordBreakpoint para parar antes da decodificaçãofinishDeixamos a função terminar de decodificarx/s $rbp-0x110Lemos a senha já decodificada da memória
+A chave foi entender que a senha estava codificada no binário e só existia em texto plano na memória em tempo de execução — por isso strings não funcionou diretamente.
+
+
+ctf-player@pico-chall$ ./bypassme.bin 
+
+
+
+          ███████╗███████╗ ██████╗██╗   ██╗██████╗ ███████╗    ██████╗  ██████╗ ██████╗ ████████╗ █████╗ ██╗     
+          ██╔════╝██╔════╝██╔════╝██║   ██║██╔══██╗██╔════╝    ██╔══██╗██╔═══██╗██╔══██╗╚══██╔══╝██╔══██╗██║                                                                
+          ███████╗█████╗  ██║     ██║   ██║██████╔╝█████╗      ██████╔╝██║   ██║██████╔╝   ██║   ███████║██║                                                                
+          ╚════██║██╔══╝  ██║     ██║   ██║██╔══██╗██╔══╝      ██╔═══╝ ██║   ██║██╔══██╗   ██║   ██╔══██║██║                                                                
+          ███████║███████╗╚██████╗╚██████╔╝██║  ██║███████╗    ██║     ╚██████╔╝██║  ██║   ██║   ██║  ██║███████╗                                                           
+          ╚══════╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝    ╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝                                                           
+                                                                                                                                                                            
+ Initializing secure modules...
+ Running memory diagnostics...                                                                                                                                              
+ All systems online...                                                                                                                                                      
+                                                                                                                                                                            
+ Access to this terminal is restricted.
+ Please authenticate below.                                                                                                                                                 
+----------------------------------------                                                                                                                                    
+                                                                                                                                                                            
+                                                                                                                                                                            
+[3 tries left] Enter password: SuperSecure
+
+Raw Input:      [SuperSecure]
+Sanitized Input:[SuperSecure]
+Hint: Input must match something special...
+
+Authenticating...
+🎉 Flag: picoCTF{d3bugg3r_p0w3r_is_4w3s0m3_b8f8478e}
+ctf-player@pico-chall$ Connection to foggy-cliff.picoctf.net closed by remote host.
+Connection to foggy-cliff.picoctf.net closed.
+                                              
