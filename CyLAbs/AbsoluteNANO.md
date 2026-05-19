@@ -1,4 +1,10 @@
-/bin/nano /etc/sudoer
+sudo -l 
+
+user /bin/nano /etc/sudoer
+
+
+entao avrimos 
+sudo /bin/nano /etc/sudoer
 
 
 so colocar 
